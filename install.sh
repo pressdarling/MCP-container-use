@@ -1,7 +1,7 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
 # container-use installer script
-# Downloads and installs the appropriate binary for your system
+# Downloads and installs the appropriate cu binary for your system
 
 set -euo pipefail
 
