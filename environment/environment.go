@@ -27,6 +27,7 @@ const (
 	instructionsFile = "AGENT.md"
 	environmentFile  = "environment.json"
 	lockFile         = "lock"
+	defaultShell     = "bash"
 )
 
 type Version int
@@ -82,6 +83,7 @@ type Environment struct {
 	Instructions  string   `json:"-"`
 	Workdir       string   `json:"workdir"`
 	BaseImage     string   `json:"base_image"`
+	Shell         string   `json:"shell,omitempty"`
 	SetupCommands []string `json:"setup_commands,omitempty"`
 	Secrets       []string `json:"secrets,omitempty"`
 
@@ -126,6 +128,10 @@ func (env *Environment) load(baseDir string) error {
 	if err != nil {
 		return err
 	}
+
+	// for backwards compatibility when existing env file doesn't have a shell specified.
+	// if specified, this is immediately overwritten by the unmarshalled value
+	env.Shell = "bash"
 	if err := json.Unmarshal(envState, env); err != nil {
 		return err
 	}
@@ -176,6 +182,7 @@ func Create(ctx context.Context, explanation, source, name string) (*Environment
 		BaseImage:    defaultImage,
 		Instructions: "No instructions found. Please look around the filesystem and update me",
 		Workdir:      "/workdir",
+		Shell:        defaultShell,
 	}
 	if err := env.load(source); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -300,7 +307,11 @@ func (env *Environment) buildBase(ctx context.Context) (*dagger.Container, error
 	return container, nil
 }
 
-func (env *Environment) Update(ctx context.Context, explanation, instructions, baseImage string, setupCommands, secrets []string) error {
+func (env *Environment) Update(
+	ctx context.Context,
+	explanation, instructions, baseImage, shell string,
+	setupCommands, secrets []string,
+) error {
 	if env.isLocked(env.Source) {
 		return fmt.Errorf("Environment is locked, no updates allowed. Try to make do with the current environment or ask a human to remove the lock file (%s)", path.Join(env.Source, configDir, lockFile))
 	}
@@ -309,6 +320,11 @@ func (env *Environment) Update(ctx context.Context, explanation, instructions, b
 	env.BaseImage = baseImage
 	env.SetupCommands = setupCommands
 	env.Secrets = secrets
+
+	if shell == "" {
+		shell = defaultShell
+	}
+	env.Shell = shell
 
 	// Re-build the base image from the worktree
 	container, err := env.buildBase(ctx)
@@ -503,9 +519,11 @@ func (env *Environment) Fork(ctx context.Context, explanation, name string, vers
 
 func (env *Environment) Terminal(ctx context.Context) error {
 	container := env.container
-	// In case there's bash in the container, show the same pretty PS1 as for the default /bin/sh terminal in dagger
-	container = container.WithNewFile("/root/.bash_aliases", `export PS1="\033[33mdagger\033[0m \033[02m\$(pwd | sed \"s|^\$HOME|~|\")\033[0m \$ "`+"\n")
-	if _, err := container.Terminal(dagger.ContainerTerminalOpts{}).Sync(ctx); err != nil {
+	// if we're defaulting to bash, show the same pretty PS1 as for the default /bin/sh terminal in dagger
+	container = container.WithNewFile("/root/.bashrc", `export PS1="\033[33mdagger\033[0m \033[02m\$(pwd | sed \"s|^\$HOME|~|\")\033[0m \$ "`+"\n")
+	if _, err := container.Terminal(dagger.ContainerTerminalOpts{
+		Cmd: []string{env.Shell},
+	}).Sync(ctx); err != nil {
 		return err
 	}
 	return nil

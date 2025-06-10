@@ -233,6 +233,9 @@ Supported schemas are:
 			mcp.Required(),
 			mcp.Items(map[string]any{"type": "string"}),
 		),
+		mcp.WithString("shell",
+			mcp.Description("The default shell to use in the environment"),
+		),
 	),
 	Handler: func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		envID, err := request.RequireString("environment_id")
@@ -259,8 +262,17 @@ Supported schemas are:
 		if err != nil {
 			return nil, err
 		}
+		shell := request.GetString("shell", "")
 
-		if err := env.Update(ctx, request.GetString("explanation", ""), instructions, baseImage, setupCommands, secrets); err != nil {
+		if err := env.Update(
+			ctx,
+			request.GetString("explanation", ""),
+			instructions,
+			baseImage,
+			shell,
+			setupCommands,
+			secrets,
+		); err != nil {
 			return mcp.NewToolResultErrorFromErr("failed to update environment", err), nil
 		}
 		return EnvironmentToCallResult(env)
@@ -445,7 +457,7 @@ Failure to do so will result in the tool being stuck, awaiting for the command t
 			return mcp.NewToolResultError(fmt.Sprintf("environment %s not found", envID)), nil
 		}
 		command := request.GetString("command", "")
-		shell := request.GetString("shell", "sh")
+		shell := request.GetString("shell", env.Shell)
 
 		background := request.GetBool("background", false)
 		if background {
