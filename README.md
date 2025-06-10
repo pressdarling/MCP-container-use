@@ -180,3 +180,7 @@ Your agents will automatically commit to a container-use remote on your local fi
 ```console
 cu watch
 ```
+
+## How it Works
+
+container-use is an Model Context Protocol server that provides Environments to an agent. Environments are an abstraction over containers and git branches powered by dagger and git worktrees. For more information, see [environment/README.md](environment/README.md).
