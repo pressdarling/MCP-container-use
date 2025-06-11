@@ -183,9 +183,12 @@ func Create(ctx context.Context, explanation, source, name string) (*Environment
 		}
 	}
 
-	worktreePath, err := env.InitializeWorktree(ctx, source)
+	if err := env.SetupTrackingBranch(ctx, source); err != nil {
+		return nil, fmt.Errorf("failed setting up tracking branch: %w", err)
+	}
+	worktreePath, err := env.GetWorktreePath()
 	if err != nil {
-		return nil, fmt.Errorf("failed intializing worktree: %w", err)
+		return nil, err
 	}
 	env.Worktree = worktreePath
 
@@ -201,8 +204,8 @@ func Create(ctx context.Context, explanation, source, name string) (*Environment
 	}
 	environments[env.ID] = env
 
-	if err := env.propagateToWorktree(ctx, "Init env "+name, explanation); err != nil {
-		return nil, fmt.Errorf("failed to propagate to worktree: %w", err)
+	if err := env.PropogateToTrackedBranch(ctx, "Init env "+name, explanation); err != nil {
+		return nil, fmt.Errorf("failed to propagate to tracking branch: %w", err)
 	}
 
 	return env, nil
@@ -217,9 +220,12 @@ func Open(ctx context.Context, explanation, source, id string) (*Environment, er
 		ID:     id,
 		Source: source,
 	}
-	worktreePath, err := env.InitializeWorktree(ctx, source)
+	if err := env.SetupTrackingBranch(ctx, source); err != nil {
+		return nil, fmt.Errorf("failed setting up tracking branch: %w", err)
+	}
+	worktreePath, err := env.GetWorktreePath()
 	if err != nil {
-		return nil, fmt.Errorf("failed intializing worktree: %w", err)
+		return nil, err
 	}
 	env.Worktree = worktreePath
 
@@ -320,7 +326,7 @@ func (env *Environment) Update(ctx context.Context, explanation, instructions, b
 		return err
 	}
 
-	return env.propagateToWorktree(ctx, "Update environment "+env.Name, explanation)
+	return env.PropogateToTrackedBranch(ctx, "Update environment "+env.Name, explanation)
 }
 
 func Get(idOrName string) *Environment {
@@ -370,8 +376,8 @@ func (env *Environment) Run(ctx context.Context, explanation, command, shell str
 		return "", err
 	}
 
-	if err := env.propagateToWorktree(ctx, "Run "+command, explanation); err != nil {
-		return "", fmt.Errorf("failed to propagate to worktree: %w", err)
+	if err := env.PropogateToTrackedBranch(ctx, "Run "+command, explanation); err != nil {
+		return "", fmt.Errorf("failed to propagate to tracking branch: %w", err)
 	}
 
 	return stdout, nil
@@ -478,7 +484,7 @@ func (env *Environment) Revert(ctx context.Context, explanation string, version 
 	if err := env.apply(ctx, "Revert to "+revision.Name, explanation, "", revision.container); err != nil {
 		return err
 	}
-	return env.propagateToWorktree(ctx, "Revert to "+revision.Name, explanation)
+	return env.PropogateToTrackedBranch(ctx, "Revert to "+revision.Name, explanation)
 }
 
 func (env *Environment) Fork(ctx context.Context, explanation, name string, version *Version) (*Environment, error) {
@@ -519,11 +525,7 @@ func (env *Environment) Delete(ctx context.Context) error {
 	env.mu.Lock()
 	defer env.mu.Unlock()
 
-	if err := env.DeleteWorktree(); err != nil {
-		return err
-	}
-
-	if err := env.DeleteLocalRemoteBranch(); err != nil {
+	if err := env.DeleteTrackingBranch(); err != nil {
 		return err
 	}
 
