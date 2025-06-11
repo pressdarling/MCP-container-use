@@ -204,7 +204,7 @@ func Create(ctx context.Context, explanation, source, name string) (*Environment
 	}
 	environments[env.ID] = env
 
-	if err := env.PropogateToTrackedBranch(ctx, "Init env "+name, explanation); err != nil {
+	if err := env.PropagateToTrackedBranch(ctx, "Init env "+name, explanation); err != nil {
 		return nil, fmt.Errorf("failed to propagate to tracking branch: %w", err)
 	}
 
@@ -326,7 +326,7 @@ func (env *Environment) Update(ctx context.Context, explanation, instructions, b
 		return err
 	}
 
-	return env.PropogateToTrackedBranch(ctx, "Update environment "+env.Name, explanation)
+	return env.PropagateToTrackedBranch(ctx, "Update environment "+env.Name, explanation)
 }
 
 func Get(idOrName string) *Environment {
@@ -376,7 +376,7 @@ func (env *Environment) Run(ctx context.Context, explanation, command, shell str
 		return "", err
 	}
 
-	if err := env.PropogateToTrackedBranch(ctx, "Run "+command, explanation); err != nil {
+	if err := env.PropagateToTrackedBranch(ctx, "Run "+command, explanation); err != nil {
 		return "", fmt.Errorf("failed to propagate to tracking branch: %w", err)
 	}
 
@@ -484,7 +484,7 @@ func (env *Environment) Revert(ctx context.Context, explanation string, version 
 	if err := env.apply(ctx, "Revert to "+revision.Name, explanation, "", revision.container); err != nil {
 		return err
 	}
-	return env.PropogateToTrackedBranch(ctx, "Revert to "+revision.Name, explanation)
+	return env.PropagateToTrackedBranch(ctx, "Revert to "+revision.Name, explanation)
 }
 
 func (env *Environment) Fork(ctx context.Context, explanation, name string, version *Version) (*Environment, error) {

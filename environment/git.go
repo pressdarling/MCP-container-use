@@ -46,7 +46,7 @@ func (env *Environment) SetupTrackingBranch(ctx context.Context, localRepoPath s
 	return nil
 }
 
-func (env *Environment) createTrackingBranch(ctx context.Context, localRepoPath string, storage *storageLayer) error {
+func (env *Environment) createTrackingBranch(ctx context.Context, localRepoPath string, storage *LocalRemoteStorage) error {
 	slog.Info("Setting up tracking branch", "environment", env.ID, "branch", env.ID)
 
 	// Fetch current complete storage state
@@ -68,7 +68,7 @@ func (env *Environment) createTrackingBranch(ctx context.Context, localRepoPath 
 	}
 
 	// Create storage worktree for this tracking branch
-	if err := storage.createWorktree(ctx, currentBranch, env.ID); err != nil {
+	if err := storage.createWorktree(ctx, currentBranch); err != nil {
 		return err
 	}
 
@@ -89,10 +89,15 @@ func (env *Environment) createTrackingBranch(ctx context.Context, localRepoPath 
 	return nil
 }
 
-func (env *Environment) PropogateToTrackedBranch(ctx context.Context, name, explanation string) error {
+func (env *Environment) PropagateToTrackedBranch(ctx context.Context, name, explanation string) error {
 	slog.Info("Propagating to tracked environment branch", "environment", env.ID, "branch", env.ID)
 
-	worktreePath, err := env.GetWorktreePath()
+	localRepoPath, err := filepath.Abs(env.Source)
+	if err != nil {
+		return err
+	}
+
+	storage, err := env.initializeStorage(ctx, localRepoPath)
 	if err != nil {
 		return err
 	}
@@ -100,7 +105,7 @@ func (env *Environment) PropogateToTrackedBranch(ctx context.Context, name, expl
 	// Export container changes to storage
 	_, err = env.container.Directory(env.Workdir).Export(
 		ctx,
-		worktreePath,
+		storage.worktreePath,
 		dagger.DirectoryExportOpts{Wipe: true},
 	)
 	if err != nil {
@@ -108,12 +113,11 @@ func (env *Environment) PropogateToTrackedBranch(ctx context.Context, name, expl
 	}
 
 	// Save environment config to storage
-	if err := env.save(worktreePath); err != nil {
+	if err := env.save(storage.worktreePath); err != nil {
 		return err
 	}
 
 	// Commit changes in storage layer
-	storage := &storageLayer{worktreePath: worktreePath}
 	if err := storage.commitChanges(ctx, name, explanation); err != nil {
 		return fmt.Errorf("failed to commit to storage: %w", err)
 	}
@@ -121,12 +125,6 @@ func (env *Environment) PropogateToTrackedBranch(ctx context.Context, name, expl
 	// Commit state to tracking branch
 	if err := env.commitStateToNotes(ctx); err != nil {
 		return fmt.Errorf("failed to add notes to tracking branch: %w", err)
-	}
-
-	// Sync tracking branch with source repo
-	localRepoPath, err := filepath.Abs(env.Source)
-	if err != nil {
-		return err
 	}
 
 	slog.Info("Syncing remote state to source repository")
@@ -161,50 +159,35 @@ func (env *Environment) DeleteTrackingBranch() error {
 	return nil
 }
 
-func (env *Environment) InitializeWorktree(ctx context.Context, localRepoPath string) (string, error) {
-	if err := env.SetupTrackingBranch(ctx, localRepoPath); err != nil {
-		return "", err
-	}
-	return env.GetWorktreePath()
-}
-
-func (env *Environment) DeleteWorktree() error {
-	worktreePath, err := env.GetWorktreePath()
-	if err != nil {
-		return err
-	}
-	parentDir := filepath.Dir(worktreePath)
-	fmt.Printf("Deleting parent directory of worktree at %s\n", parentDir)
-	return os.RemoveAll(parentDir)
-}
-
 func (env *Environment) DeleteLocalRemoteBranch() error {
 	return env.DeleteTrackingBranch()
 }
 
-type storageLayer struct {
+type LocalRemoteStorage struct {
 	repoPath     string
 	worktreePath string
+	Branch       string
 }
 
-func (env *Environment) initializeStorage(ctx context.Context, localRepoPath string) (*storageLayer, error) {
+func (env *Environment) initializeStorage(ctx context.Context, localRepoPath string) (*LocalRemoteStorage, error) {
 	cuRepoPath, err := initializeLocalRemote(ctx, localRepoPath)
 	if err != nil {
 		return nil, err
 	}
 
-	worktreePath, err := env.GetWorktreePath()
+	worktreePath, err := homedir.Expand(fmt.Sprintf("~/.config/container-use/worktrees/%s", env.ID))
 	if err != nil {
 		return nil, err
 	}
 
-	return &storageLayer{
+	return &LocalRemoteStorage{
 		repoPath:     cuRepoPath,
 		worktreePath: worktreePath,
+		Branch:       env.ID,
 	}, nil
 }
 
-func (storage *storageLayer) createWorktree(ctx context.Context, sourceBranch string, envID string) error {
+func (storage *LocalRemoteStorage) createWorktree(ctx context.Context, sourceBranch string) error {
 	if _, err := os.Stat(storage.worktreePath); err == nil {
 		return nil
 	}
@@ -212,12 +195,12 @@ func (storage *storageLayer) createWorktree(ctx context.Context, sourceBranch st
 	// Create worktree from storage repo
 	_, err := runGitCommand(ctx, storage.repoPath, "show-ref", "--verify", "--quiet", fmt.Sprintf("refs/heads/%s", filepath.Base(storage.worktreePath)))
 	if err != nil {
-		_, err = runGitCommand(ctx, storage.repoPath, "worktree", "add", "-b", envID, storage.worktreePath, sourceBranch)
+		_, err = runGitCommand(ctx, storage.repoPath, "worktree", "add", "-b", storage.Branch, storage.worktreePath, sourceBranch)
 		if err != nil {
 			return err
 		}
 	} else {
-		_, err = runGitCommand(ctx, storage.repoPath, "worktree", "add", storage.worktreePath, envID)
+		_, err = runGitCommand(ctx, storage.repoPath, "worktree", "add", storage.worktreePath, storage.Branch)
 		if err != nil {
 			return err
 		}
@@ -226,7 +209,7 @@ func (storage *storageLayer) createWorktree(ctx context.Context, sourceBranch st
 	return nil
 }
 
-func (storage *storageLayer) commitChanges(ctx context.Context, name, explanation string) error {
+func (storage *LocalRemoteStorage) commitChanges(ctx context.Context, name, explanation string) error {
 	status, err := runGitCommand(ctx, storage.worktreePath, "status", "--porcelain")
 	if err != nil {
 		return err
@@ -285,10 +268,6 @@ func (env *Environment) deleteStorage() error {
 
 func getRepoPath(repoName string) (string, error) {
 	return homedir.Expand(fmt.Sprintf("~/.config/container-use/repos/%s", filepath.Base(repoName)))
-}
-
-func (env *Environment) GetWorktreePath() (string, error) {
-	return homedir.Expand(fmt.Sprintf("~/.config/container-use/worktrees/%s", env.ID))
 }
 
 func initializeLocalRemote(ctx context.Context, localRepoPath string) (string, error) {
@@ -471,7 +450,7 @@ func (env *Environment) applyUncommittedChanges(ctx context.Context, localRepoPa
 		}
 	}
 
-	storage := &storageLayer{worktreePath: worktreePath}
+	storage := &LocalRemoteStorage{worktreePath: worktreePath}
 	return storage.commitChanges(ctx, "Copy uncommitted changes", "Applied uncommitted changes from local repository")
 }
 
@@ -641,4 +620,9 @@ func isBinaryFile(worktreePath, fileName string) bool {
 	}
 
 	return false
+}
+
+// Backward compatibility methods
+func (env *Environment) GetWorktreePath() (string, error) {
+	return homedir.Expand(fmt.Sprintf("~/.config/container-use/worktrees/%s", env.ID))
 }
