@@ -39,14 +39,14 @@ func (env *Environment) SetupTrackingBranch(ctx context.Context, localRepoPath s
 		return err
 	}
 
-	if err := env.applyUncommittedChanges(ctx, localRepoPath, storage.worktreePath); err != nil {
+	if err := storage.applyUncommittedChanges(ctx, localRepoPath); err != nil {
 		return fmt.Errorf("failed to apply uncommitted changes: %w", err)
 	}
 
 	return nil
 }
 
-func (env *Environment) createTrackingBranch(ctx context.Context, localRepoPath string, storage *LocalRemoteStorage) error {
+func (env *Environment) createTrackingBranch(ctx context.Context, localRepoPath string, storage *Storage) error {
 	slog.Info("Setting up tracking branch", "environment", env.ID, "branch", env.ID)
 
 	// Fetch current complete storage state
@@ -102,18 +102,7 @@ func (env *Environment) PropagateToTrackedBranch(ctx context.Context, name, expl
 		return err
 	}
 
-	// Export container changes to storage
-	_, err = env.container.Directory(env.Workdir).Export(
-		ctx,
-		storage.worktreePath,
-		dagger.DirectoryExportOpts{Wipe: true},
-	)
-	if err != nil {
-		return err
-	}
-
-	// Save environment config to storage
-	if err := env.save(storage.worktreePath); err != nil {
+	if err := storage.save(ctx, env); err != nil {
 		return err
 	}
 
@@ -123,16 +112,21 @@ func (env *Environment) PropagateToTrackedBranch(ctx context.Context, name, expl
 	}
 
 	// Commit state to tracking branch
-	if err := env.commitStateToNotes(ctx); err != nil {
+	if err := storage.commitStateToNotes(ctx, env); err != nil {
 		return fmt.Errorf("failed to add notes to tracking branch: %w", err)
 	}
 
-	slog.Info("Syncing remote state to source repository")
-	if _, err := runGitCommand(ctx, localRepoPath, "fetch", containerUseRemote, env.ID); err != nil {
+	// Fetch tracking branch from storage to source repo (needed for notes propagation)
+	if err := env.fetchStorageChanges(ctx, localRepoPath); err != nil {
 		return err
 	}
 
+	// Propagate both state and log notes to source repo
 	if err := env.propagateGitNotes(ctx, gitNotesStateRef); err != nil {
+		return err
+	}
+
+	if err := env.propagateGitNotes(ctx, gitNotesLogRef); err != nil {
 		return err
 	}
 
@@ -159,17 +153,15 @@ func (env *Environment) DeleteTrackingBranch() error {
 	return nil
 }
 
-func (env *Environment) DeleteLocalRemoteBranch() error {
-	return env.DeleteTrackingBranch()
-}
-
-type LocalRemoteStorage struct {
+// This initial storage impl uses a local file:// remote and worktrees to provide storage to the container-use environment.
+// We have yet to define an interface around this, but it should be swappable for remote-remotes in the future, or impls that put container state somewhere other than git notes.
+type Storage struct {
 	repoPath     string
 	worktreePath string
 	Branch       string
 }
 
-func (env *Environment) initializeStorage(ctx context.Context, localRepoPath string) (*LocalRemoteStorage, error) {
+func (env *Environment) initializeStorage(ctx context.Context, localRepoPath string) (*Storage, error) {
 	cuRepoPath, err := initializeLocalRemote(ctx, localRepoPath)
 	if err != nil {
 		return nil, err
@@ -180,14 +172,14 @@ func (env *Environment) initializeStorage(ctx context.Context, localRepoPath str
 		return nil, err
 	}
 
-	return &LocalRemoteStorage{
+	return &Storage{
 		repoPath:     cuRepoPath,
 		worktreePath: worktreePath,
 		Branch:       env.ID,
 	}, nil
 }
 
-func (storage *LocalRemoteStorage) createWorktree(ctx context.Context, sourceBranch string) error {
+func (storage *Storage) createWorktree(ctx context.Context, sourceBranch string) error {
 	if _, err := os.Stat(storage.worktreePath); err == nil {
 		return nil
 	}
@@ -209,7 +201,7 @@ func (storage *LocalRemoteStorage) createWorktree(ctx context.Context, sourceBra
 	return nil
 }
 
-func (storage *LocalRemoteStorage) commitChanges(ctx context.Context, name, explanation string) error {
+func (storage *Storage) commitChanges(ctx context.Context, name, explanation string) error {
 	status, err := runGitCommand(ctx, storage.worktreePath, "status", "--porcelain")
 	if err != nil {
 		return err
@@ -226,6 +218,61 @@ func (storage *LocalRemoteStorage) commitChanges(ctx context.Context, name, expl
 	commitMsg := fmt.Sprintf("%s\n\n%s", name, explanation)
 	_, err = runGitCommand(ctx, storage.worktreePath, "commit", "-m", commitMsg)
 	return err
+}
+
+func (storage *Storage) Workdir() *dagger.Directory {
+	return dag.Host().Directory(storage.worktreePath)
+}
+
+func (storage *Storage) save(ctx context.Context, env *Environment) error {
+	_, err := env.container.Directory(env.Workdir).Export(
+		ctx,
+		storage.worktreePath,
+		dagger.DirectoryExportOpts{Wipe: true},
+	)
+	if err != nil {
+		return err
+	}
+
+	cfg := filepath.Join(storage.worktreePath, ".container-use")
+	if err := os.MkdirAll(cfg, 0755); err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(filepath.Join(cfg, "AGENT.md"), []byte(env.Instructions), 0644); err != nil {
+		return err
+	}
+
+	envState, err := json.MarshalIndent(env, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(filepath.Join(cfg, "environment.json"), envState, 0644); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (storage *Storage) load(env *Environment) error {
+	cfg := filepath.Join(storage.worktreePath, ".container-use")
+
+	instructions, err := os.ReadFile(filepath.Join(cfg, "AGENT.md"))
+	if err != nil {
+		return err
+	}
+	env.Instructions = string(instructions)
+
+	envState, err := os.ReadFile(filepath.Join(cfg, "environment.json"))
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(envState, env); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (env *Environment) deleteStorage() error {
@@ -353,7 +400,7 @@ func (env *Environment) propagateGitNotes(ctx context.Context, ref string) error
 	return nil
 }
 
-func (env *Environment) commitStateToNotes(ctx context.Context) error {
+func (storage *Storage) commitStateToNotes(ctx context.Context, env *Environment) error {
 	buff, err := json.MarshalIndent(env.History, "", "  ")
 	if err != nil {
 		return err
@@ -367,13 +414,27 @@ func (env *Environment) commitStateToNotes(ctx context.Context) error {
 		return err
 	}
 
-	_, err = runGitCommand(ctx, env.Worktree, "notes", "--ref", gitNotesStateRef, "add", "-f", "-F", f.Name())
+	_, err = runGitCommand(ctx, storage.worktreePath, "notes", "--ref", gitNotesStateRef, "add", "-f", "-F", f.Name())
+	return err
+}
+
+func (storage *Storage) addGitNote(ctx context.Context, note string) error {
+	_, err := runGitCommand(ctx, storage.worktreePath, "notes", "--ref", gitNotesLogRef, "append", "-m", note)
 	return err
 }
 
 func (env *Environment) addGitNote(ctx context.Context, note string) error {
-	_, err := runGitCommand(ctx, env.Worktree, "notes", "--ref", gitNotesLogRef, "append", "-m", note)
+	localRepoPath, err := filepath.Abs(env.Source)
 	if err != nil {
+		return err
+	}
+
+	storage, err := env.initializeStorage(ctx, localRepoPath)
+	if err != nil {
+		return err
+	}
+
+	if err := storage.addGitNote(ctx, note); err != nil {
 		return err
 	}
 	return env.propagateGitNotes(ctx, gitNotesLogRef)
@@ -403,7 +464,13 @@ func (env *Environment) loadStateFromNotes(ctx context.Context, worktreePath str
 	return json.Unmarshal([]byte(buff), &env.History)
 }
 
-func (env *Environment) applyUncommittedChanges(ctx context.Context, localRepoPath, worktreePath string) error {
+func (env *Environment) fetchStorageChanges(ctx context.Context, localRepoPath string) error {
+	slog.Info("Fetching tracking branch from storage to source repository")
+	_, err := runGitCommand(ctx, localRepoPath, "fetch", containerUseRemote, env.ID)
+	return err
+}
+
+func (storage *Storage) applyUncommittedChanges(ctx context.Context, localRepoPath string) error {
 	status, err := runGitCommand(ctx, localRepoPath, "status", "--porcelain")
 	if err != nil {
 		return err
@@ -413,7 +480,7 @@ func (env *Environment) applyUncommittedChanges(ctx context.Context, localRepoPa
 		return nil
 	}
 
-	slog.Info("Applying uncommitted changes to tracked branch", "environment", env.ID)
+	slog.Info("Applying uncommitted changes to tracked branch")
 
 	patch, err := runGitCommand(ctx, localRepoPath, "diff", "HEAD")
 	if err != nil {
@@ -422,7 +489,7 @@ func (env *Environment) applyUncommittedChanges(ctx context.Context, localRepoPa
 
 	if strings.TrimSpace(patch) != "" {
 		cmd := exec.Command("git", "apply")
-		cmd.Dir = worktreePath
+		cmd.Dir = storage.worktreePath
 		cmd.Stdin = strings.NewReader(patch)
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to apply patch: %w", err)
@@ -439,7 +506,7 @@ func (env *Environment) applyUncommittedChanges(ctx context.Context, localRepoPa
 			continue
 		}
 		srcPath := filepath.Join(localRepoPath, file)
-		destPath := filepath.Join(worktreePath, file)
+		destPath := filepath.Join(storage.worktreePath, file)
 
 		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 			return err
@@ -450,7 +517,6 @@ func (env *Environment) applyUncommittedChanges(ctx context.Context, localRepoPa
 		}
 	}
 
-	storage := &LocalRemoteStorage{worktreePath: worktreePath}
 	return storage.commitChanges(ctx, "Copy uncommitted changes", "Applied uncommitted changes from local repository")
 }
 

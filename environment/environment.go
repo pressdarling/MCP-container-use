@@ -2,13 +2,13 @@ package environment
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -91,48 +91,6 @@ type Environment struct {
 	container *dagger.Container
 }
 
-func (env *Environment) save(baseDir string) error {
-	cfg := path.Join(baseDir, configDir)
-	if err := os.MkdirAll(cfg, 0755); err != nil {
-		return err
-	}
-
-	if err := os.WriteFile(path.Join(cfg, instructionsFile), []byte(env.Instructions), 0644); err != nil {
-		return err
-	}
-
-	envState, err := json.MarshalIndent(env, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	if err := os.WriteFile(path.Join(cfg, environmentFile), envState, 0644); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (env *Environment) load(baseDir string) error {
-	cfg := path.Join(baseDir, configDir)
-
-	instructions, err := os.ReadFile(path.Join(cfg, instructionsFile))
-	if err != nil {
-		return err
-	}
-	env.Instructions = string(instructions)
-
-	envState, err := os.ReadFile(path.Join(cfg, environmentFile))
-	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(envState, env); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func (env *Environment) isLocked(baseDir string) bool {
 	if _, err := os.Stat(path.Join(baseDir, configDir, lockFile)); err == nil {
 		return true
@@ -177,14 +135,24 @@ func Create(ctx context.Context, explanation, source, name string) (*Environment
 		Instructions: "No instructions found. Please look around the filesystem and update me",
 		Workdir:      "/workdir",
 	}
-	if err := env.load(source); err != nil {
+	if err := env.SetupTrackingBranch(ctx, source); err != nil {
+		return nil, fmt.Errorf("failed setting up tracking branch: %w", err)
+	}
+
+	localRepoPath, err := filepath.Abs(source)
+	if err != nil {
+		return nil, err
+	}
+
+	storage, err := env.initializeStorage(ctx, localRepoPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := storage.load(env); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
-	}
-
-	if err := env.SetupTrackingBranch(ctx, source); err != nil {
-		return nil, fmt.Errorf("failed setting up tracking branch: %w", err)
 	}
 	worktreePath, err := env.GetWorktreePath()
 	if err != nil {
@@ -229,7 +197,17 @@ func Open(ctx context.Context, explanation, source, id string) (*Environment, er
 	}
 	env.Worktree = worktreePath
 
-	if err := env.load(worktreePath); err != nil {
+	localRepoPath, err := filepath.Abs(source)
+	if err != nil {
+		return nil, err
+	}
+
+	storage, err := env.initializeStorage(ctx, localRepoPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := storage.load(env); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Create(ctx, explanation, source, name)
 		}
@@ -262,7 +240,17 @@ func Open(ctx context.Context, explanation, source, id string) (*Environment, er
 }
 
 func (env *Environment) buildBase(ctx context.Context) (*dagger.Container, error) {
-	sourceDir := dag.Host().Directory(env.Worktree)
+	localRepoPath, err := filepath.Abs(env.Source)
+	if err != nil {
+		return nil, err
+	}
+
+	storage, err := env.initializeStorage(ctx, localRepoPath)
+	if err != nil {
+		return nil, err
+	}
+
+	sourceDir := storage.Workdir()
 
 	container := dag.
 		Container().
