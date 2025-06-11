@@ -74,10 +74,9 @@ func Initialize(client *dagger.Client) error {
 }
 
 type Environment struct {
-	ID       string `json:"-"`
-	Name     string `json:"-"`
-	Source   string `json:"-"`
-	Worktree string `json:"-"`
+	ID     string `json:"-"`
+	Name   string `json:"-"`
+	Source string `json:"-"`
 
 	Instructions  string   `json:"-"`
 	Workdir       string   `json:"workdir"`
@@ -154,11 +153,6 @@ func Create(ctx context.Context, explanation, source, name string) (*Environment
 			return nil, err
 		}
 	}
-	worktreePath, err := env.GetWorktreePath()
-	if err != nil {
-		return nil, err
-	}
-	env.Worktree = worktreePath
 
 	container, err := env.buildBase(ctx)
 	if err != nil {
@@ -191,11 +185,6 @@ func Open(ctx context.Context, explanation, source, id string) (*Environment, er
 	if err := env.SetupTrackingBranch(ctx, source); err != nil {
 		return nil, fmt.Errorf("failed setting up tracking branch: %w", err)
 	}
-	worktreePath, err := env.GetWorktreePath()
-	if err != nil {
-		return nil, err
-	}
-	env.Worktree = worktreePath
 
 	localRepoPath, err := filepath.Abs(source)
 	if err != nil {

@@ -73,8 +73,7 @@ func (env *Environment) createTrackingBranch(ctx context.Context, localRepoPath 
 	}
 
 	// Establish the tracking branch in source repo
-	_, err = runGitCommand(ctx, localRepoPath, "fetch", containerUseRemote, env.ID)
-	if err != nil {
+	if err := env.fetchStorage(ctx, localRepoPath); err != nil {
 		return err
 	}
 
@@ -117,16 +116,16 @@ func (env *Environment) PropagateToTrackedBranch(ctx context.Context, name, expl
 	}
 
 	// Fetch tracking branch from storage to source repo (needed for notes propagation)
-	if err := env.fetchStorageChanges(ctx, localRepoPath); err != nil {
+	if err := env.fetchStorage(ctx, localRepoPath); err != nil {
 		return err
 	}
 
 	// Propagate both state and log notes to source repo
-	if err := env.propagateGitNotes(ctx, gitNotesStateRef); err != nil {
+	if err := env.fetchGitNotes(ctx, gitNotesStateRef); err != nil {
 		return err
 	}
 
-	if err := env.propagateGitNotes(ctx, gitNotesLogRef); err != nil {
+	if err := env.fetchGitNotes(ctx, gitNotesLogRef); err != nil {
 		return err
 	}
 
@@ -382,7 +381,7 @@ func runGitCommand(ctx context.Context, dir string, args ...string) (out string,
 	return string(output), nil
 }
 
-func (env *Environment) propagateGitNotes(ctx context.Context, ref string) error {
+func (env *Environment) fetchGitNotes(ctx context.Context, ref string) error {
 	fullRef := fmt.Sprintf("refs/notes/%s", ref)
 	fetch := func() error {
 		_, err := runGitCommand(ctx, env.Source, "fetch", containerUseRemote, fullRef+":"+fullRef)
@@ -437,7 +436,7 @@ func (env *Environment) addGitNote(ctx context.Context, note string) error {
 	if err := storage.addGitNote(ctx, note); err != nil {
 		return err
 	}
-	return env.propagateGitNotes(ctx, gitNotesLogRef)
+	return env.fetchGitNotes(ctx, gitNotesLogRef)
 }
 
 func StateFromCommit(ctx context.Context, repoDir, commit string) (History, error) {
@@ -464,7 +463,7 @@ func (env *Environment) loadStateFromNotes(ctx context.Context, worktreePath str
 	return json.Unmarshal([]byte(buff), &env.History)
 }
 
-func (env *Environment) fetchStorageChanges(ctx context.Context, localRepoPath string) error {
+func (env *Environment) fetchStorage(ctx context.Context, localRepoPath string) error {
 	slog.Info("Fetching tracking branch from storage to source repository")
 	_, err := runGitCommand(ctx, localRepoPath, "fetch", containerUseRemote, env.ID)
 	return err
