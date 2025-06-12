@@ -41,8 +41,8 @@ func NewLocalRemote(dag *dagger.Client) *LocalRemote {
 	return &LocalRemote{dag: dag}
 }
 
-// storage represents the local storage for an environment
-type storage struct {
+// worktree represents the LocalRemote's worktree for an environment, totally hidden from the user
+type worktree struct {
 	repoPath     string
 	worktreePath string
 	branch       string
@@ -52,14 +52,12 @@ type storage struct {
 func (r *LocalRemote) RemoteUrl(project string) string {
 	ctx := context.Background()
 
-	// Get absolute path of the project
-	projectPath, err := filepath.Abs(project)
+	repoName, err := getRepoName(project)
 	if err != nil {
 		return ""
 	}
 
-	// Initialize the remote storage if it doesn't exist
-	repoPath, err := initializeLocalRemote(ctx, projectPath)
+	repoPath, err := initializeLocalRemote(ctx, repoName)
 	if err != nil {
 		return ""
 	}
@@ -71,42 +69,27 @@ func (r *LocalRemote) RemoteUrl(project string) string {
 func (r *LocalRemote) Create(env *environment.Environment) error {
 	ctx := context.Background()
 
-	localRepoPath, err := filepath.Abs(env.Source())
-	if err != nil {
-		return err
-	}
-
-	cuRepoPath, err := initializeLocalRemote(ctx, localRepoPath)
-	if err != nil {
-		return err
-	}
-
 	worktreePath, err := getWorktreePath(env.ID)
 	if err != nil {
 		return err
 	}
+	repoName, err := getRepoName(env.Source())
+	if err != nil {
+		return err
+	}
+	repoPath, err := getRepoPath(repoName)
+	if err != nil {
+		return err
+	}
 
-	s := &storage{
-		repoPath:     cuRepoPath,
+	slog.Info("Creating worktree", "env", env.ID, "path", worktreePath, "repo", repoPath)
+	s := &worktree{
+		repoPath:     repoPath,
 		worktreePath: worktreePath,
 		branch:       env.ID,
 	}
 
-	// Determine the default branch
-	defaultBranch, err := runGitCommand(ctx, localRepoPath, "branch", "--show-current")
-	if err != nil || strings.TrimSpace(defaultBranch) == "" {
-		// Try to get the default branch name
-		defaultBranch, err = runGitCommand(ctx, localRepoPath, "symbolic-ref", "refs/remotes/origin/HEAD")
-		if err != nil {
-			defaultBranch = "main" // fallback
-		} else {
-			defaultBranch = strings.TrimPrefix(strings.TrimSpace(defaultBranch), "refs/remotes/origin/")
-		}
-	} else {
-		defaultBranch = strings.TrimSpace(defaultBranch)
-	}
-
-	if err := s.createWorktree(ctx, defaultBranch); err != nil {
+	if err := s.createWorktree(ctx); err != nil {
 		return err
 	}
 
@@ -260,7 +243,7 @@ func (r *LocalRemote) BaseProjectDir(env *environment.Environment) *dagger.Direc
 }
 
 // getStorage creates a storage instance for the environment
-func (r *LocalRemote) getStorage(env *environment.Environment) (*storage, error) {
+func (r *LocalRemote) getStorage(env *environment.Environment) (*worktree, error) {
 	repoName, err := getRepoName(env.Source())
 	if err != nil {
 		return nil, err
@@ -276,7 +259,7 @@ func (r *LocalRemote) getStorage(env *environment.Environment) (*storage, error)
 		return nil, err
 	}
 
-	return &storage{
+	return &worktree{
 		repoPath:     cuRepoPath,
 		worktreePath: worktreePath,
 		branch:       env.ID,
@@ -284,7 +267,7 @@ func (r *LocalRemote) getStorage(env *environment.Environment) (*storage, error)
 }
 
 func getRepoPath(repoName string) (string, error) {
-	return homedir.Expand(fmt.Sprintf(configRepoPathTemplate, filepath.Base(repoName)))
+	return homedir.Expand(fmt.Sprintf(configRepoPathTemplate, repoName))
 }
 
 func getWorktreePath(envName string) (string, error) {
@@ -299,31 +282,7 @@ func getRepoName(sourcePath string) (string, error) {
 	return filepath.Base(absPath), nil
 }
 
-func initializeLocalRemote(ctx context.Context, localRepoPath string) (string, error) {
-	localRepoPath, err := filepath.Abs(localRepoPath)
-	if err != nil {
-		return "", err
-	}
-
-	// Check if localRepoPath is a git repository, initialize if not
-	if _, err := os.Stat(filepath.Join(localRepoPath, ".git")); os.IsNotExist(err) {
-		slog.Info("Initializing git repository", "path", localRepoPath)
-		_, err = runGitCommand(ctx, localRepoPath, "init")
-		if err != nil {
-			return "", err
-		}
-
-		// Create an initial commit if the repo is empty
-		_, err = runGitCommand(ctx, localRepoPath, "commit", "--allow-empty", "-m", "Initial commit")
-		if err != nil {
-			return "", err
-		}
-	}
-
-	repoName, err := getRepoName(localRepoPath)
-	if err != nil {
-		return "", err
-	}
+func initializeLocalRemote(ctx context.Context, repoName string) (string, error) {
 	cuRepoPath, err := getRepoPath(repoName)
 	if err != nil {
 		return "", err
@@ -334,29 +293,16 @@ func initializeLocalRemote(ctx context.Context, localRepoPath string) (string, e
 			return "", err
 		}
 
-		slog.Info("Initializing storage repository", "source", localRepoPath, "storage", cuRepoPath)
-		_, err = runGitCommand(ctx, localRepoPath, "clone", "--bare", localRepoPath, cuRepoPath)
+		slog.Info("Initializing storage repository", "storage", cuRepoPath)
+		if err := os.MkdirAll(filepath.Dir(cuRepoPath), 0755); err != nil {
+			return "", err
+		}
+		_, err = runGitCommand(ctx, cuRepoPath, "init", "--bare")
 		if err != nil {
 			return "", err
 		}
 	}
 
-	// Set up remote in source repo pointing to storage
-	existingURL, err := runGitCommand(ctx, localRepoPath, "remote", "get-url", containerUseRemote)
-	if err != nil {
-		_, err = runGitCommand(ctx, localRepoPath, "remote", "add", containerUseRemote, cuRepoPath)
-		if err != nil {
-			return "", err
-		}
-	} else {
-		existingURL = strings.TrimSpace(existingURL)
-		if existingURL != cuRepoPath {
-			_, err = runGitCommand(ctx, localRepoPath, "remote", "set-url", containerUseRemote, cuRepoPath)
-			if err != nil {
-				return "", err
-			}
-		}
-	}
 	return cuRepoPath, nil
 }
 
@@ -382,7 +328,7 @@ func runGitCommand(ctx context.Context, dir string, args ...string) (out string,
 	return string(output), nil
 }
 
-func (s *storage) createWorktree(ctx context.Context, sourceBranch string) error {
+func (s *worktree) createWorktree(ctx context.Context) error {
 	if _, err := os.Stat(s.worktreePath); err == nil {
 		return nil
 	}
@@ -392,26 +338,15 @@ func (s *storage) createWorktree(ctx context.Context, sourceBranch string) error
 		return err
 	}
 
-	// Create worktree from storage repo - check if our target branch already exists
-	_, err := runGitCommand(ctx, s.repoPath, "show-ref", "--verify", "--quiet", fmt.Sprintf("refs/heads/%s", s.branch))
+	_, err := runGitCommand(ctx, s.repoPath, "worktree", "add", s.worktreePath, s.branch)
 	if err != nil {
-		// Branch doesn't exist, create it from sourceBranch
-		_, err = runGitCommand(ctx, s.repoPath, "worktree", "add", "-b", s.branch, s.worktreePath, sourceBranch)
-		if err != nil {
-			return err
-		}
-	} else {
-		// Branch exists, checkout to it
-		_, err = runGitCommand(ctx, s.repoPath, "worktree", "add", s.worktreePath, s.branch)
-		if err != nil {
-			return err
-		}
+		return err
 	}
 
 	return nil
 }
 
-func (s *storage) save(ctx context.Context, env *environment.Environment) error {
+func (s *worktree) save(ctx context.Context, env *environment.Environment) error {
 	_, err := env.Container().Directory(env.Workdir).Export(
 		ctx,
 		s.worktreePath,
@@ -442,7 +377,7 @@ func (s *storage) save(ctx context.Context, env *environment.Environment) error 
 	return nil
 }
 
-func (s *storage) load(env *environment.Environment) error {
+func (s *worktree) load(env *environment.Environment) error {
 	cfg := filepath.Join(s.worktreePath, ".container-use")
 
 	instructions, err := os.ReadFile(filepath.Join(cfg, "AGENT.md"))
@@ -462,7 +397,7 @@ func (s *storage) load(env *environment.Environment) error {
 	return nil
 }
 
-func (s *storage) commitChanges(ctx context.Context, name, explanation string) error {
+func (s *worktree) commitChanges(ctx context.Context, name, explanation string) error {
 	status, err := runGitCommand(ctx, s.worktreePath, "status", "--porcelain")
 	if err != nil {
 		return err
@@ -481,7 +416,7 @@ func (s *storage) commitChanges(ctx context.Context, name, explanation string) e
 	return err
 }
 
-func (s *storage) commitStateToNotes(ctx context.Context, env *environment.Environment) error {
+func (s *worktree) commitStateToNotes(ctx context.Context, env *environment.Environment) error {
 	buff, err := json.MarshalIndent(env.History, "", "  ")
 	if err != nil {
 		return err
@@ -499,12 +434,12 @@ func (s *storage) commitStateToNotes(ctx context.Context, env *environment.Envir
 	return err
 }
 
-func (s *storage) addGitNote(ctx context.Context, note string) error {
+func (s *worktree) addGitNote(ctx context.Context, note string) error {
 	_, err := runGitCommand(ctx, s.worktreePath, "notes", "--ref", gitNotesLogRef, "append", "-m", note)
 	return err
 }
 
-func (s *storage) applyPatch(ctx context.Context, patchContent string) error {
+func (s *worktree) applyPatch(ctx context.Context, patchContent string) error {
 	if strings.TrimSpace(patchContent) == "" {
 		return nil
 	}

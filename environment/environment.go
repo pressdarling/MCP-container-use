@@ -174,18 +174,18 @@ func Create(ctx context.Context, explanation, source, name string) (*Environment
 		}
 	}
 
-	// // Generate patch from uncommitted changes in the source repo
-	// patch, err := env.GeneratePatch(ctx)
-	// if err != nil {
-	// 	return nil, fmt.Errorf("failed to generate patch: %w", err)
-	// }
+	// Generate patch from uncommitted changes in the source repo
+	patch, err := env.GeneratePatch(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate patch: %w", err)
+	}
 
-	// // Apply the patch if there are any changes
-	// if patch != "" {
-	// 	if err := storage.Patch(env, patch); err != nil {
-	// 		return nil, fmt.Errorf("failed to apply patch: %w", err)
-	// 	}
-	// }
+	// Apply the patch if there are any changes
+	if patch != "" {
+		if err := storage.Patch(env, patch); err != nil {
+			return nil, fmt.Errorf("failed to apply patch: %w", err)
+		}
+	}
 
 	container, err := env.buildBase(ctx)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -23,9 +24,44 @@ func (env *Environment) SetupTrackingBranch(ctx context.Context, localRepoPath s
 		return err
 	}
 
+	// Check if localRepoPath is a git repository, initialize if not
+	if _, err := os.Stat(filepath.Join(localRepoPath, ".git")); os.IsNotExist(err) {
+		slog.Info("Initializing git repository", "path", localRepoPath)
+		_, err = runGitCommand(ctx, localRepoPath, "init")
+		if err != nil {
+			return err
+		}
+
+		// Create an initial commit if the repo is empty
+		_, err = runGitCommand(ctx, localRepoPath, "commit", "--allow-empty", "-m", "Initial commit")
+		if err != nil {
+			return err
+		}
+	}
+
 	remoteUrl := storage.RemoteUrl(localRepoPath)
 	if remoteUrl == "" {
 		return fmt.Errorf("failed to initialize remote storage for project: %s", localRepoPath)
+	}
+
+	// Extract the repository path from the file:// URL
+	cuRepoPath := strings.TrimPrefix(remoteUrl, "file://")
+
+	// Set up remote in source repo pointing to storage
+	existingURL, err := runGitCommand(ctx, localRepoPath, "remote", "get-url", containerUseRemote)
+	if err != nil {
+		_, err = runGitCommand(ctx, localRepoPath, "remote", "add", containerUseRemote, cuRepoPath)
+		if err != nil {
+			return err
+		}
+	} else {
+		existingURL = strings.TrimSpace(existingURL)
+		if existingURL != cuRepoPath {
+			_, err = runGitCommand(ctx, localRepoPath, "remote", "set-url", containerUseRemote, cuRepoPath)
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	if err := env.createTrackingBranch(ctx, localRepoPath); err != nil {
