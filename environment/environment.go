@@ -324,6 +324,14 @@ func (env *Environment) Update(ctx context.Context, explanation, instructions, b
 	return env.PropagateToTrackedBranch(ctx, "Update environment "+env.Name, explanation)
 }
 
+func (env *Environment) getRepoName() (string, error) {
+	sourcePath, err := filepath.Abs(env.source)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute path of source: %w", err)
+	}
+	return filepath.Base(sourcePath), nil
+}
+
 func Get(idOrName string) *Environment {
 	if environment, ok := environments[idOrName]; ok {
 		return environment
@@ -525,9 +533,23 @@ func (env *Environment) Delete(ctx context.Context) error {
 	}
 
 	// Delegate storage deletion to the remote layer
-	repoName := filepath.Base(env.source)
+	repoName, err := env.getRepoName()
+	if err != nil {
+		return err
+	}
 	if err := storage.Delete(repoName, env.ID); err != nil {
 		return fmt.Errorf("failed to delete storage: %w", err)
+	}
+
+	// Fetch from remote with prune to delete remote-tracking branches
+	sourcePath, err := filepath.Abs(env.source)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path of source: %w", err)
+	}
+
+	_, err = runGitCommand(ctx, sourcePath, "fetch", containerUseRemote, "-p")
+	if err != nil {
+		slog.Warn("Failed to fetch and prune remote branches", "source", sourcePath, "err", err)
 	}
 
 	// Remove from global environments map

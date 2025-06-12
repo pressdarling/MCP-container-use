@@ -177,6 +177,13 @@ func (r *LocalRemote) Load(env *environment.Environment) error {
 // Delete removes the environment from storage
 func (r *LocalRemote) Delete(repoName string, envName string) error {
 	ctx := context.Background()
+	var lastErr error
+
+	// Get the repo path first
+	repoPath, err := getRepoPath(repoName)
+	if err != nil {
+		return fmt.Errorf("failed to get repo path: %w", err)
+	}
 
 	// Delete the worktree
 	worktreePath, err := getWorktreePath(envName)
@@ -184,21 +191,59 @@ func (r *LocalRemote) Delete(repoName string, envName string) error {
 		return fmt.Errorf("failed to expand worktree path: %w", err)
 	}
 
-	slog.Info("Deleting environment worktree", "envName", envName, "path", worktreePath)
-	if err := os.RemoveAll(worktreePath); err != nil {
-		return fmt.Errorf("failed to delete worktree: %w", err)
+	// Check if worktree exists before trying to delete it
+	if _, err := os.Stat(worktreePath); err == nil {
+		slog.Info("Deleting environment worktree", "envName", envName, "path", worktreePath)
+		if err := os.RemoveAll(worktreePath); err != nil {
+			slog.Warn("Failed to delete worktree", "path", worktreePath, "err", err)
+			lastErr = err
+		}
+	} else if !os.IsNotExist(err) {
+		slog.Warn("Failed to check worktree existence", "path", worktreePath, "err", err)
+		lastErr = err
+	} else {
+		slog.Info("Worktree already deleted", "envName", envName, "path", worktreePath)
 	}
 
-	// Delete the environment branch from the specified storage repo
-	repoPath, err := getRepoPath(repoName)
-	if err != nil {
-		return fmt.Errorf("failed to get repo path: %w", err)
+	// Check if repo exists before running git commands
+	if _, err := os.Stat(repoPath); err == nil {
+		// Prune worktree references after manual removal
+		slog.Info("Pruning worktree references", "repo", repoPath)
+		_, err = runGitCommand(ctx, repoPath, "worktree", "prune")
+		if err != nil {
+			slog.Warn("Failed to prune worktree references", "repo", repoPath, "err", err)
+			if lastErr == nil {
+				lastErr = err
+			}
+		}
+
+		// Delete the environment branch from the specified storage repo
+		slog.Info("Deleting environment branch", "envName", envName, "repo", repoPath)
+		_, err = runGitCommand(ctx, repoPath, "branch", "-D", envName)
+		if err != nil {
+			// Check if error is because branch doesn't exist
+			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
+				slog.Info("Environment branch already deleted", "envName", envName, "repo", repoPath)
+			} else {
+				slog.Warn("Failed to delete environment branch", "envName", envName, "repo", repoPath, "err", err)
+				if lastErr == nil {
+					lastErr = err
+				}
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		slog.Warn("Failed to check repo existence", "repo", repoPath, "err", err)
+		if lastErr == nil {
+			lastErr = err
+		}
+	} else {
+		slog.Info("Repository already deleted", "repo", repoPath)
 	}
 
-	slog.Info("Deleting environment branch", "envName", envName, "repo", repoPath)
-	_, err = runGitCommand(ctx, repoPath, "branch", "-D", envName)
-	if err != nil {
-		slog.Warn("Failed to delete environment branch", "envName", envName, "repo", repoPath, "err", err)
+	// Return the last error encountered, if any, but don't fail the operation
+	// since this is a cleanup operation and partial success is acceptable
+	if lastErr != nil {
+		slog.Warn("Delete operation completed with some errors", "lastErr", lastErr)
 	}
 
 	return nil
@@ -216,12 +261,12 @@ func (r *LocalRemote) BaseProjectDir(env *environment.Environment) *dagger.Direc
 
 // getStorage creates a storage instance for the environment
 func (r *LocalRemote) getStorage(env *environment.Environment) (*storage, error) {
-	localRepoPath, err := filepath.Abs(env.Source())
+	repoName, err := getRepoName(env.Source())
 	if err != nil {
 		return nil, err
 	}
 
-	cuRepoPath, err := getRepoPath(filepath.Base(localRepoPath))
+	cuRepoPath, err := getRepoPath(repoName)
 	if err != nil {
 		return nil, err
 	}
@@ -246,6 +291,14 @@ func getWorktreePath(envName string) (string, error) {
 	return homedir.Expand(fmt.Sprintf(configWorktreePathTemplate, envName))
 }
 
+func getRepoName(sourcePath string) (string, error) {
+	absPath, err := filepath.Abs(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Base(absPath), nil
+}
+
 func initializeLocalRemote(ctx context.Context, localRepoPath string) (string, error) {
 	localRepoPath, err := filepath.Abs(localRepoPath)
 	if err != nil {
@@ -267,7 +320,10 @@ func initializeLocalRemote(ctx context.Context, localRepoPath string) (string, e
 		}
 	}
 
-	repoName := filepath.Base(localRepoPath)
+	repoName, err := getRepoName(localRepoPath)
+	if err != nil {
+		return "", err
+	}
 	cuRepoPath, err := getRepoPath(repoName)
 	if err != nil {
 		return "", err
