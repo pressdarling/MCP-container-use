@@ -10,6 +10,7 @@ import (
 
 	"dagger.io/dagger"
 	"github.com/dagger/container-use/environment"
+	"github.com/dagger/container-use/environment/remotes"
 	"github.com/spf13/cobra"
 )
 
@@ -40,7 +41,8 @@ var terminalCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		defer dag.Close()
-		environment.Initialize(dag)
+		localRemote := remotes.NewLocalRemote(dag)
+		environment.Initialize(dag, localRemote)
 
 		env, err := environment.Open(ctx, "opening terminal", ".", args[0])
 		if err != nil {

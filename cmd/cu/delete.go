@@ -6,6 +6,7 @@ import (
 
 	"dagger.io/dagger"
 	"github.com/dagger/container-use/environment"
+	"github.com/dagger/container-use/environment/remotes"
 	"github.com/spf13/cobra"
 )
 
@@ -23,7 +24,8 @@ var deleteCmd = &cobra.Command{
 			return fmt.Errorf("failed to connect to dagger: %w", err)
 		}
 		defer dag.Close()
-		environment.Initialize(dag)
+		localRemote := remotes.NewLocalRemote(dag)
+		environment.Initialize(dag, localRemote)
 
 		env := environment.Get(envName)
 		if env == nil {

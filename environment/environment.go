@@ -8,7 +8,6 @@ import (
 	"math/rand"
 	"os"
 	"path"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +18,7 @@ import (
 )
 
 var dag *dagger.Client
+var storage Remote
 
 const (
 	defaultImage     = "ubuntu:24.04"
@@ -68,15 +68,28 @@ func (h History) Get(version Version) *Revision {
 	return nil
 }
 
-func Initialize(client *dagger.Client) error {
+func Initialize(client *dagger.Client, remoteStorage Remote) error {
 	dag = client
+	storage = remoteStorage
 	return nil
+}
+
+// Remote interface defines how environments interact with remote storage
+type Remote interface {
+	RemoteUrl(project string) string
+	Create(*Environment) error
+	Save(*Environment, string, string) error
+	Note(*Environment, string) error
+	Patch(*Environment, string) error
+	Load(*Environment) error
+	Delete(envName string) error
+	BaseProjectDir(*Environment) *dagger.Directory
 }
 
 type Environment struct {
 	ID     string `json:"-"`
 	Name   string `json:"-"`
-	Source string `json:"-"`
+	source string `json:"-"`
 
 	Instructions  string   `json:"-"`
 	Workdir       string   `json:"workdir"`
@@ -88,6 +101,14 @@ type Environment struct {
 
 	mu        sync.Mutex
 	container *dagger.Container
+}
+
+func (env *Environment) Source() string {
+	return env.source
+}
+
+func (env *Environment) Container() *dagger.Container {
+	return env.container
 }
 
 func (env *Environment) isLocked(baseDir string) bool {
@@ -129,7 +150,7 @@ func Create(ctx context.Context, explanation, source, name string) (*Environment
 	env := &Environment{
 		ID:           fmt.Sprintf("%s/%s", name, petname.Generate(2, "-")),
 		Name:         name,
-		Source:       source,
+		source:       source,
 		BaseImage:    defaultImage,
 		Instructions: "No instructions found. Please look around the filesystem and update me",
 		Workdir:      "/workdir",
@@ -138,17 +159,11 @@ func Create(ctx context.Context, explanation, source, name string) (*Environment
 		return nil, fmt.Errorf("failed setting up tracking branch: %w", err)
 	}
 
-	localRepoPath, err := filepath.Abs(source)
-	if err != nil {
+	if err := storage.Create(env); err != nil {
 		return nil, err
 	}
 
-	storage, err := env.initializeStorage(ctx, localRepoPath)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := storage.load(env); err != nil {
+	if err := storage.Load(env); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
@@ -180,23 +195,17 @@ func Open(ctx context.Context, explanation, source, id string) (*Environment, er
 	env := &Environment{
 		Name:   name,
 		ID:     id,
-		Source: source,
+		source: source,
 	}
 	if err := env.SetupTrackingBranch(ctx, source); err != nil {
 		return nil, fmt.Errorf("failed setting up tracking branch: %w", err)
 	}
 
-	localRepoPath, err := filepath.Abs(source)
-	if err != nil {
+	if err := storage.Create(env); err != nil {
 		return nil, err
 	}
 
-	storage, err := env.initializeStorage(ctx, localRepoPath)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := storage.load(env); err != nil {
+	if err := storage.Load(env); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Create(ctx, explanation, source, name)
 		}
@@ -229,17 +238,7 @@ func Open(ctx context.Context, explanation, source, id string) (*Environment, er
 }
 
 func (env *Environment) buildBase(ctx context.Context) (*dagger.Container, error) {
-	localRepoPath, err := filepath.Abs(env.Source)
-	if err != nil {
-		return nil, err
-	}
-
-	storage, err := env.initializeStorage(ctx, localRepoPath)
-	if err != nil {
-		return nil, err
-	}
-
-	sourceDir := storage.Workdir()
+	sourceDir := storage.BaseProjectDir(env)
 
 	container := dag.
 		Container().
@@ -284,8 +283,8 @@ func (env *Environment) buildBase(ctx context.Context) (*dagger.Container, error
 }
 
 func (env *Environment) Update(ctx context.Context, explanation, instructions, baseImage string, setupCommands, secrets []string) error {
-	if env.isLocked(env.Source) {
-		return fmt.Errorf("Environment is locked, no updates allowed. Try to make do with the current environment or ask a human to remove the lock file (%s)", path.Join(env.Source, configDir, lockFile))
+	if env.isLocked(env.source) {
+		return fmt.Errorf("Environment is locked, no updates allowed. Try to make do with the current environment or ask a human to remove the lock file (%s)", path.Join(env.source, configDir, lockFile))
 	}
 
 	env.Instructions = instructions
