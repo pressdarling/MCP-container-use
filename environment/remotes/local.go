@@ -43,12 +43,22 @@ type storage struct {
 	branch       string
 }
 
-// RemoteUrl returns the file:// URL for the project storage
+// RemoteUrl returns the file:// URL for the project storage, ensuring the remote exists
 func (r *LocalRemote) RemoteUrl(project string) string {
-	repoPath, err := getRepoPath(project)
+	ctx := context.Background()
+
+	// Get absolute path of the project
+	projectPath, err := filepath.Abs(project)
 	if err != nil {
 		return ""
 	}
+
+	// Initialize the remote storage if it doesn't exist
+	repoPath, err := initializeLocalRemote(ctx, projectPath)
+	if err != nil {
+		return ""
+	}
+
 	return "file://" + repoPath
 }
 

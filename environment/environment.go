@@ -76,6 +76,8 @@ func Initialize(client *dagger.Client, remoteStorage Remote) error {
 
 // Remote interface defines how environments interact with remote storage
 type Remote interface {
+	// RemoteUrl must ensure that a remote exists and returns the URL for the project storage.
+	// It must be called prior to all other operations.
 	RemoteUrl(project string) string
 	Create(*Environment) error
 	Save(*Environment, string, string) error
@@ -155,6 +157,8 @@ func Create(ctx context.Context, explanation, source, name string) (*Environment
 		Instructions: "No instructions found. Please look around the filesystem and update me",
 		Workdir:      "/workdir",
 	}
+
+	// maybe rename to syncCurrentBranch or something?
 	if err := env.SetupTrackingBranch(ctx, source); err != nil {
 		return nil, fmt.Errorf("failed setting up tracking branch: %w", err)
 	}
@@ -162,7 +166,6 @@ func Create(ctx context.Context, explanation, source, name string) (*Environment
 	if err := storage.Create(env); err != nil {
 		return nil, err
 	}
-
 	if err := storage.Load(env); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
@@ -244,6 +247,9 @@ func (env *Environment) buildBase(ctx context.Context) (*dagger.Container, error
 		Container().
 		From(env.BaseImage).
 		WithWorkdir(env.Workdir)
+
+	// Initialize log notes to ensure refs/notes/container-use exists
+	_ = env.addGitNote(ctx, fmt.Sprintf("Environment %s created with base image %s\n\n", env.ID, env.BaseImage))
 
 	for _, secret := range env.Secrets {
 		k, v, found := strings.Cut(secret, "=")

@@ -26,6 +26,11 @@ func (env *Environment) SetupTrackingBranch(ctx context.Context, localRepoPath s
 		return err
 	}
 
+	remoteUrl := storage.RemoteUrl(localRepoPath)
+	if remoteUrl == "" {
+		return fmt.Errorf("failed to initialize remote storage for project: %s", localRepoPath)
+	}
+
 	if err := env.createTrackingBranch(ctx, localRepoPath); err != nil {
 		return err
 	}
@@ -34,30 +39,49 @@ func (env *Environment) SetupTrackingBranch(ctx context.Context, localRepoPath s
 }
 
 func (env *Environment) createTrackingBranch(ctx context.Context, localRepoPath string) error {
-	slog.Info("Setting up tracking branch", "environment", env.ID, "branch", env.ID)
+	_, err := runGitCommand(ctx, localRepoPath, "ls-remote", "--exit-code", containerUseRemote, env.ID)
+	if err != nil {
+		slog.Info("Setting up tracking branch", "environment", env.ID, "branch", env.ID)
+		currentBranch, err := runGitCommand(ctx, localRepoPath, "branch", "--show-current")
+		if err != nil {
+			return err
+		}
 
-	// Push current branch to storage to establish the tracking branch
-	currentBranch, err := runGitCommand(ctx, localRepoPath, "branch", "--show-current")
+		currentBranch = strings.TrimSpace(currentBranch)
+		if currentBranch == "" {
+			return fmt.Errorf("no current branch found")
+		}
+
+		_, err = runGitCommand(ctx, localRepoPath, "push", containerUseRemote, fmt.Sprintf("%s:%s", currentBranch, env.ID))
+		if err != nil {
+			return err
+		}
+	}
+
+	slog.Info("Syncing remote ref", "environment", env.ID, "branch", env.ID)
+	_, err = runGitCommand(ctx, localRepoPath, "fetch", containerUseRemote, env.ID)
 	if err != nil {
 		return err
 	}
 
-	currentBranch = strings.TrimSpace(currentBranch)
-	if currentBranch == "" {
-		return fmt.Errorf("no current branch found")
-	}
+	// // Set up the tracking branch locally (idempotently)
+	// remoteBranch := fmt.Sprintf("%s/%s", containerUseRemote, env.ID)
 
-	// Create the tracking branch by pushing to storage
-	_, err = runGitCommand(ctx, localRepoPath, "push", containerUseRemote, fmt.Sprintf("%s:%s", currentBranch, env.ID))
-	if err != nil {
-		return err
-	}
-
-	// Set up the tracking branch locally
-	_, err = runGitCommand(ctx, localRepoPath, "branch", "--track", env.ID, fmt.Sprintf("%s/%s", containerUseRemote, env.ID))
-	if err != nil {
-		return err
-	}
+	// // Check if local branch already exists
+	// _, err = runGitCommand(ctx, localRepoPath, "rev-parse", "--verify", env.ID)
+	// if err != nil {
+	// 	// Local branch doesn't exist, create it with tracking
+	// 	_, err = runGitCommand(ctx, localRepoPath, "branch", "--track", env.ID, remoteBranch)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// } else {
+	// 	// Local branch exists, set up tracking without deleting it
+	// 	_, err = runGitCommand(ctx, localRepoPath, "branch", "--set-upstream-to", remoteBranch, env.ID)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// }
 
 	return nil
 }
