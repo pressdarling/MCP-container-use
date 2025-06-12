@@ -44,6 +44,7 @@ var terminalCmd = &cobra.Command{
 		localRemote := remotes.NewLocalRemote(dag)
 		environment.Initialize(dag, localRemote)
 
+		slog.Info("Opening environment for terminal access", "name", args[0])
 		env, err := environment.Open(ctx, "opening terminal", ".", args[0])
 		if err != nil {
 			return err

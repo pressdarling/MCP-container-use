@@ -22,6 +22,11 @@ const (
 	containerUseRemote = "container-use"
 	gitNotesLogRef     = "container-use"
 	gitNotesStateRef   = "container-use-state"
+
+	// Config directory paths
+	configBaseDir              = "~/.config/container-use"
+	configRepoPathTemplate     = configBaseDir + "/repos/%s"
+	configWorktreePathTemplate = configBaseDir + "/worktrees/%s"
 )
 
 const maxFileSizeForTextCheck = 10 * 1024 * 1024
@@ -76,7 +81,7 @@ func (r *LocalRemote) Create(env *environment.Environment) error {
 		return err
 	}
 
-	worktreePath, err := homedir.Expand(fmt.Sprintf("~/.config/container-use/worktrees/%s", env.ID))
+	worktreePath, err := getWorktreePath(env.ID)
 	if err != nil {
 		return err
 	}
@@ -103,19 +108,6 @@ func (r *LocalRemote) Create(env *environment.Environment) error {
 
 	if err := s.createWorktree(ctx, defaultBranch); err != nil {
 		return err
-	}
-
-	// Generate patch from uncommitted changes in the source repo
-	patch, err := env.GeneratePatch(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to generate patch: %w", err)
-	}
-
-	// Apply the patch if there are any changes
-	if patch != "" {
-		if err := r.Patch(env, patch); err != nil {
-			return fmt.Errorf("failed to apply patch: %w", err)
-		}
 	}
 
 	return nil
@@ -183,9 +175,32 @@ func (r *LocalRemote) Load(env *environment.Environment) error {
 }
 
 // Delete removes the environment from storage
-func (r *LocalRemote) Delete(envName string) error {
-	// Implementation would remove the worktree and clean up storage
-	// For now, return nil as the original implementation doesn't have this
+func (r *LocalRemote) Delete(repoName string, envName string) error {
+	ctx := context.Background()
+
+	// Delete the worktree
+	worktreePath, err := getWorktreePath(envName)
+	if err != nil {
+		return fmt.Errorf("failed to expand worktree path: %w", err)
+	}
+
+	slog.Info("Deleting environment worktree", "envName", envName, "path", worktreePath)
+	if err := os.RemoveAll(worktreePath); err != nil {
+		return fmt.Errorf("failed to delete worktree: %w", err)
+	}
+
+	// Delete the environment branch from the specified storage repo
+	repoPath, err := getRepoPath(repoName)
+	if err != nil {
+		return fmt.Errorf("failed to get repo path: %w", err)
+	}
+
+	slog.Info("Deleting environment branch", "envName", envName, "repo", repoPath)
+	_, err = runGitCommand(ctx, repoPath, "branch", "-D", envName)
+	if err != nil {
+		slog.Warn("Failed to delete environment branch", "envName", envName, "repo", repoPath, "err", err)
+	}
+
 	return nil
 }
 
@@ -211,7 +226,7 @@ func (r *LocalRemote) getStorage(env *environment.Environment) (*storage, error)
 		return nil, err
 	}
 
-	worktreePath, err := homedir.Expand(fmt.Sprintf("~/.config/container-use/worktrees/%s", env.ID))
+	worktreePath, err := getWorktreePath(env.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -223,10 +238,12 @@ func (r *LocalRemote) getStorage(env *environment.Environment) (*storage, error)
 	}, nil
 }
 
-// Helper functions moved from git.go
-
 func getRepoPath(repoName string) (string, error) {
-	return homedir.Expand(fmt.Sprintf("~/.config/container-use/repos/%s", filepath.Base(repoName)))
+	return homedir.Expand(fmt.Sprintf(configRepoPathTemplate, filepath.Base(repoName)))
+}
+
+func getWorktreePath(envName string) (string, error) {
+	return homedir.Expand(fmt.Sprintf(configWorktreePathTemplate, envName))
 }
 
 func initializeLocalRemote(ctx context.Context, localRepoPath string) (string, error) {

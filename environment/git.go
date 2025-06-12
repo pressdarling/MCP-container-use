@@ -6,12 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"github.com/mitchellh/go-homedir"
 )
 
 const (
@@ -136,32 +133,6 @@ func (env *Environment) DeleteTrackingBranch() error {
 		slog.Warn("Failed to delete local tracking branch", "err", err)
 	}
 
-	return env.deleteStorage()
-}
-
-// this is violently breaking the remote abstraction right now
-func (env *Environment) deleteStorage() error {
-	// Delete worktree
-	worktreePath, err := env.GetWorktreePath()
-	if err != nil {
-		return err
-	}
-	parentDir := filepath.Dir(worktreePath)
-	slog.Info("Deleting storage worktree", "path", parentDir)
-	if err := os.RemoveAll(parentDir); err != nil {
-		return err
-	}
-
-	// Delete the storage repository ()
-	repoPath := storage.RemoteUrl(filepath.Base(env.source))
-	if strings.HasPrefix(repoPath, "file://") {
-		repoPath = repoPath[7:] // Remove file:// prefix
-		slog.Info("Deleting storage repository", "path", repoPath)
-		if err := os.RemoveAll(repoPath); err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
@@ -251,10 +222,6 @@ func (env *Environment) fetchStorage(ctx context.Context, localRepoPath string) 
 	slog.Info("Fetching tracking branch from storage to source repository")
 	_, err := runGitCommand(ctx, localRepoPath, "fetch", containerUseRemote, env.ID)
 	return err
-}
-
-func (env *Environment) GetWorktreePath() (string, error) {
-	return homedir.Expand(fmt.Sprintf("~/.config/container-use/worktrees/%s", env.ID))
 }
 
 func runGitCommand(ctx context.Context, dir string, args ...string) (out string, rerr error) {

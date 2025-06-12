@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -84,7 +85,7 @@ type Remote interface {
 	Note(*Environment, string) error
 	Patch(*Environment, string) error
 	Load(*Environment) error
-	Delete(envName string) error
+	Delete(repoName string, envName string) error
 	BaseProjectDir(*Environment) *dagger.Directory
 }
 
@@ -166,11 +167,25 @@ func Create(ctx context.Context, explanation, source, name string) (*Environment
 	if err := storage.Create(env); err != nil {
 		return nil, err
 	}
+
 	if err := storage.Load(env); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
 	}
+
+	// // Generate patch from uncommitted changes in the source repo
+	// patch, err := env.GeneratePatch(ctx)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("failed to generate patch: %w", err)
+	// }
+
+	// // Apply the patch if there are any changes
+	// if patch != "" {
+	// 	if err := storage.Patch(env, patch); err != nil {
+	// 		return nil, fmt.Errorf("failed to apply patch: %w", err)
+	// 	}
+	// }
 
 	container, err := env.buildBase(ctx)
 	if err != nil {
@@ -192,8 +207,6 @@ func Create(ctx context.Context, explanation, source, name string) (*Environment
 }
 
 func Open(ctx context.Context, explanation, source, id string) (*Environment, error) {
-	// FIXME(aluzzardi): DO NOT USE THIS FUNCTION. It's broken.
-
 	name, _, _ := strings.Cut(id, "/")
 	env := &Environment{
 		Name:   name,
@@ -509,6 +522,12 @@ func (env *Environment) Delete(ctx context.Context) error {
 
 	if err := env.DeleteTrackingBranch(); err != nil {
 		return err
+	}
+
+	// Delegate storage deletion to the remote layer
+	repoName := filepath.Base(env.source)
+	if err := storage.Delete(repoName, env.ID); err != nil {
+		return fmt.Errorf("failed to delete storage: %w", err)
 	}
 
 	// Remove from global environments map

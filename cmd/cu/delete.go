@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"dagger.io/dagger"
@@ -31,6 +32,7 @@ var deleteCmd = &cobra.Command{
 		if env == nil {
 			// Try to open if not in memory
 			var openErr error
+			slog.Info("Opening environment for deletion", "name", envName)
 			env, openErr = environment.Open(ctx, "delete environment", ".", envName)
 			if openErr != nil {
 				return fmt.Errorf("environment '%s' not found: %w", envName, openErr)
