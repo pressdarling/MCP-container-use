@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/dagger/container-use/environment"
+	"github.com/dagger/container-use/repository"
 	"github.com/dagger/container-use/rules"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -315,7 +316,11 @@ var EnvironmentListTool = &Tool{
 		if err != nil {
 			return nil, err
 		}
-		envs, err := environment.List(ctx, source)
+		repo, err := repository.Open(ctx, source)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("invalid source", err), nil
+		}
+		envs, err := repo.List(ctx)
 		if err != nil {
 			return mcp.NewToolResultErrorFromErr("invalid source", err), nil
 		}

@@ -299,28 +299,6 @@ func Get(idOrName string) *Environment {
 	return nil
 }
 
-func List(ctx context.Context, source string) ([]string, error) {
-	if _, err := runGitCommand(ctx, source, "rev-parse", "--is-inside-work-tree"); err != nil {
-		return nil, fmt.Errorf("cu list only works within git repository, no repo found (or any of the parent directories): .git")
-	}
-
-	branches, err := runGitCommand(ctx, source, "for-each-ref", "refs/remotes/"+containerUseRemote, "--format", "%(refname:short)")
-	if err != nil {
-		return nil, err
-	}
-
-	envs := []string{}
-	for _, branch := range strings.Split(branches, "\n") {
-		env := strings.TrimPrefix(branch, containerUseRemote+"/")
-		if !strings.Contains(env, "/") {
-			continue
-		}
-		envs = append(envs, env)
-	}
-
-	return envs, nil
-}
-
 func (env *Environment) Run(ctx context.Context, explanation, command, shell string, useEntrypoint bool) (string, error) {
 	args := []string{}
 	if command != "" {

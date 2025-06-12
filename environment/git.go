@@ -54,6 +54,9 @@ func (env *Environment) DeleteLocalRemoteBranch() error {
 	}
 	repoName := filepath.Base(localRepoPath)
 	cuRepoPath, err := getRepoPath(repoName)
+	if err != nil {
+		return err
+	}
 
 	slog.Info("Pruning git worktrees", "repo", cuRepoPath)
 	if _, err = runGitCommand(context.Background(), cuRepoPath, "worktree", "prune"); err != nil {
