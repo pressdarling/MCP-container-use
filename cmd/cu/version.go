@@ -30,9 +30,13 @@ var versionCmd = &cobra.Command{
 			}
 		}
 
-		fmt.Printf("%s\n\n", currentVersion)
-		fmt.Printf("commit: %s\n", currentCommit)
-		fmt.Printf("built: %s\n", currentDate)
+		fmt.Printf("cu version %s\n", currentVersion)
+		if currentCommit != "unknown" {
+			fmt.Printf("commit: %s\n", currentCommit)
+		}
+		if currentDate != "unknown" {
+			fmt.Printf("built: %s\n", currentDate)
+		}
 	},
 }
 
