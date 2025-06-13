@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"runtime/debug"
 
 	"github.com/spf13/cobra"
 )
@@ -17,12 +18,61 @@ var versionCmd = &cobra.Command{
 	Short: "Print version information",
 	Long:  `Print the version, commit hash, and build date of the cu binary.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("cu version %s\n", version)
-		fmt.Printf("commit: %s\n", commit)
-		fmt.Printf("built: %s\n", date)
+		currentVersion := version
+		currentCommit := commit
+		currentDate := date
+
+		// For dev builds, try to extract build info from the binary
+		if version == "dev" {
+			if buildCommit, buildTime := getBuildInfoFromBinary(); buildCommit != "unknown" {
+				currentCommit = buildCommit
+				currentDate = buildTime
+			}
+		}
+
+		fmt.Printf("%s\n\n", currentVersion)
+		fmt.Printf("commit: %s\n", currentCommit)
+		fmt.Printf("built: %s\n", currentDate)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(versionCmd)
+}
+
+func getBuildInfoFromBinary() (string, string) {
+	buildInfo, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown", "unknown"
+	}
+
+	var revision, buildTime, modified string
+
+	for _, setting := range buildInfo.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.time":
+			buildTime = setting.Value
+		case "vcs.modified":
+			modified = setting.Value
+		}
+	}
+
+	// Format commit hash (use short version)
+	if len(revision) > 7 {
+		revision = revision[:7]
+	}
+	if modified == "true" {
+		revision += "-dirty"
+	}
+
+	if revision == "" {
+		revision = "unknown"
+	}
+	if buildTime == "" {
+		buildTime = "unknown"
+	}
+
+	return revision, buildTime
 }
