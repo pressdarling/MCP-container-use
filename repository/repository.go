@@ -8,6 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/dagger/container-use/environment"
+	petname "github.com/dustinkirkland/golang-petname"
 )
 
 const (
@@ -15,6 +18,8 @@ const (
 	cuRepoPath         = cuGlobalConfigPath + "/repos"
 	cuWorktreePath     = cuGlobalConfigPath + "/worktrees"
 	containerUseRemote = "container-use"
+	gitNotesLogRef     = "container-use"
+	gitNotesStateRef   = "container-use-state"
 )
 
 type Repository struct {
@@ -65,6 +70,9 @@ func (r *Repository) ensureFork(ctx context.Context) error {
 	}
 
 	slog.Info("Initializing local remote", "user-repo", r.userRepoPath, "fork-repo", r.forkRepoPath)
+	if err := os.MkdirAll(r.forkRepoPath, 0755); err != nil {
+		return err
+	}
 	_, err = runGitCommand(ctx, r.userRepoPath, "clone", "--bare", r.userRepoPath, r.forkRepoPath)
 	if err != nil {
 		return err
@@ -88,6 +96,59 @@ func (r *Repository) ensureLocalRemote(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (r *Repository) Get(ctx context.Context, id string) (*environment.Environment, error) {
+	name, _, _ := strings.Cut(id, "/")
+	worktree, err := r.initializeWorktree(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	state, err := r.loadState(ctx, worktree)
+	if err != nil {
+		return nil, err
+	}
+
+	env, err := environment.Load(ctx, id, name, state, worktree)
+	if err != nil {
+		return nil, err
+	}
+
+	return env, nil
+}
+
+func (r *Repository) Create(ctx context.Context, name, explanation string) (*environment.Environment, error) {
+	id := fmt.Sprintf("%s/%s", name, petname.Generate(2, "-"))
+	worktree, err := r.initializeWorktree(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	env, err := environment.New(ctx, id, name, worktree)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := r.propagateToWorktree(ctx, env, "Create env "+name, explanation); err != nil {
+		return nil, err
+	}
+
+	return env, nil
+}
+
+func (r *Repository) Update(ctx context.Context, id, operation, explanation string, fn func(context.Context, *environment.Environment) error) (*environment.Environment, error) {
+	env, err := r.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := fn(ctx, env); err != nil {
+		return nil, err
+	}
+	if err := r.propagateToWorktree(ctx, env, "Update env "+env.Name, explanation); err != nil {
+		return nil, err
+	}
+	return env, nil
 }
 
 func (r *Repository) List(ctx context.Context) ([]string, error) {

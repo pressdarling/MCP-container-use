@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -31,6 +32,10 @@ func getContainerUseRemote(ctx context.Context, repo string) (string, error) {
 	}
 
 	return strings.TrimSpace(cuRemote), nil
+}
+
+func worktreePath(id string) (string, error) {
+	return homedir.Expand(path.Join(cuWorktreePath, id))
 }
 
 func normalizeForkPath(ctx context.Context, repo string) (string, error) {
